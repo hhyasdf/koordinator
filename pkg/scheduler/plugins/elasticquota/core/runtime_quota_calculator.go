@@ -172,16 +172,22 @@ type quotaTreeMapType map[v1.ResourceName]*quotaTree
 
 // RuntimeQuotaCalculator helps to calculate the childGroups' all resource dimensions' runtimeQuota of the
 // corresponding quotaInfo(treeName)
+// 树状结构，全局有一个根节点 root elastic quota，
+// 然后树中每个节点又可以各自代表一个 quota group 子树，其所有子孙节点组成该 quota group
 type RuntimeQuotaCalculator struct {
 	globalRuntimeVersion int64                        // increase as the runtimeQuota changed
 	resourceKeys         map[v1.ResourceName]struct{} // the resource dimensions
 	groupReqLimit        quotaResMapType              // all childQuotaInfos' limitedRequest
-	quotaTree            quotaTreeMapType             // has all resource dimension's information
-	totalResource        v1.ResourceList              // the parentQuotaInfo's runtimeQuota or the clusterResource
-	lock                 sync.Mutex
-	treeName             string // the same as the parentQuotaInfo's Name
-	groupGuaranteed      quotaResMapType
+
+	// 每个资源类型一个 quotaTree struct，quotaTree struct 包含了一个所有节点的 map，map 中的 key 为节点名字
+	quotaTree       quotaTreeMapType // has all resource dimension's information
+	totalResource   v1.ResourceList  // the parentQuotaInfo's runtimeQuota or the clusterResource
+	lock            sync.Mutex
+	treeName        string // the same as the parentQuotaInfo's Name
+	groupGuaranteed quotaResMapType
 }
+
+// 这个 Calculator 看起来只定义了一些存储结构，基本没有计算逻辑定义，主要计算逻辑在 group quota manager
 
 func NewRuntimeQuotaCalculator(treeName string) *RuntimeQuotaCalculator {
 	return &RuntimeQuotaCalculator{

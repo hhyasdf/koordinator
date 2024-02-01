@@ -188,6 +188,11 @@ type ElasticQuotaArgs struct {
 	EnableCheckParentQuota bool
 
 	// EnableRuntimeQuota if true, use max instead of runtime for all checks.
+	// 为了解决 https://github.com/koordinator-sh/koordinator/pull/1839，应该写错了，为 false 才是使用 max。
+	// Runtime 指的是某个 elastic quota 实时能用于分配给 pod 的资源（runtime 永远小于等于 request），
+	// 会根据所有 eq 实际请求量、集群资源总量、min、max 的情况计算。
+	// 如果一个 eq 的 req 值小于 min，min 剩余的部分会被拆借给其他 eq 作为 runtime。
+	// 关闭后，使用 max 代替 runtime 作为对应值。
 	EnableRuntimeQuota bool
 }
 

@@ -155,6 +155,8 @@ func New(args runtime.Object, handle framework.Handle) (framework.Plugin, error)
 
 	ctx := context.TODO()
 
+	// 很多事情都是在 informer 里通过对象事件触发的，调度时使用的是 informer 更新后的结果
+
 	elasticQuota.createRootQuotaIfNotPresent()
 	elasticQuota.createSystemQuotaIfNotPresent()
 	elasticQuota.createDefaultQuotaIfNotPresent()
@@ -211,6 +213,7 @@ func (g *Plugin) EventsToRegister() []framework.ClusterEvent {
 func (g *Plugin) PreFilter(ctx context.Context, cycleState *framework.CycleState, pod *corev1.Pod) (*framework.PreFilterResult, *framework.Status) {
 	quotaName, treeID := g.getPodAssociateQuotaNameAndTreeID(pod)
 	if quotaName == "" {
+		// 如果 pod 没有对应的 elastic quota，则跳过 post filter 阶段
 		g.skipPostFilterState(cycleState)
 		return nil, framework.NewStatus(framework.Success, "")
 	}
@@ -220,17 +223,22 @@ func (g *Plugin) PreFilter(ctx context.Context, cycleState *framework.CycleState
 		return nil, framework.NewStatus(framework.Error, fmt.Sprintf("Could not find the specified ElasticQuotaManager for quota: %v, tree: %v", quotaName, treeID))
 	}
 	if g.pluginArgs.EnableRuntimeQuota {
+		// 重新计算 runtime 值
 		mgr.RefreshRuntime(quotaName)
 	}
 	quotaInfo := mgr.GetQuotaInfoByName(quotaName)
 	if quotaInfo == nil {
 		return nil, framework.NewStatus(framework.Error, fmt.Sprintf("Could not find the specified ElasticQuota"))
 	}
+
+	// 把 pod 状态快照保存在 cycleState 里的 postFilterKey 部分
+	// 每个 plugin 的 cycleState 应该是独立的
 	state := g.snapshotPostFilterState(quotaInfo, cycleState)
 
 	podRequest, _ := core.PodRequestsAndLimits(pod)
 
 	used := quotav1.Mask(quotav1.Add(podRequest, state.used), quotav1.ResourceNames(podRequest))
+	// state.usedLimit 为 runtime 或者 max
 	if isLessEqual, exceedDimensions := quotav1.LessThanOrEqual(used, state.usedLimit); !isLessEqual {
 		return nil, framework.NewStatus(framework.Unschedulable, fmt.Sprintf("Insufficient quotas, "+
 			"quotaName: %v, runtime: %v, used: %v, pod's request: %v, exceedDimensions: %v",
@@ -276,6 +284,8 @@ func (g *Plugin) AddPod(ctx context.Context, state *framework.CycleState, podToS
 		return framework.NewStatus(framework.Success, "")
 	}
 
+	// 主要服务于抢占的逻辑，抢占的时候也要结合 elastic quota 的条件考虑
+	// quotaInfo 里的 pod cache 保存了所有 pod 的信息
 	if postFilterState.quotaInfo.IsPodExist(podInfoToAdd.Pod) {
 		podReq, _ := core.PodRequestsAndLimits(podInfoToAdd.Pod)
 		postFilterState.used = quotav1.Add(postFilterState.used, podReq)
@@ -300,6 +310,7 @@ func (g *Plugin) RemovePod(ctx context.Context, state *framework.CycleState, pod
 		return framework.NewStatus(framework.Success, "")
 	}
 
+	// 主要服务于抢占的逻辑，抢占的时候也要结合 elastic quota 的条件考虑
 	if postFilterState.quotaInfo.IsPodExist(podInfoToRemove.Pod) {
 		podReq, _ := core.PodRequestsAndLimits(podInfoToRemove.Pod)
 		postFilterState.used = quotav1.SubtractWithNonNegativeResult(postFilterState.used, podReq)
@@ -319,7 +330,9 @@ func (g *Plugin) PostFilter(ctx context.Context, state *framework.CycleState, po
 		PodLister:  g.podLister,
 		PdbLister:  g.pdbLister,
 		State:      state,
-		Interface:  g,
+
+		// 这里的接口是自己实现的，跟 default-preemption 不一样
+		Interface: g,
 	}
 
 	result, status := pe.Preempt(ctx, pod, filteredNodeStatusMap)

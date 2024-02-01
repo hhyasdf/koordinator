@@ -30,6 +30,7 @@ import (
 	"github.com/koordinator-sh/koordinator/pkg/features"
 )
 
+// QuotaCalculateInfo 包含了 quota group 所有的运行时计算数值以及其解释
 type QuotaCalculateInfo struct {
 	// The semantics of "max" is the quota group's upper limit of resources.
 	Max v1.ResourceList
@@ -74,9 +75,12 @@ type QuotaInfo struct {
 	RuntimeVersion int64
 	// Allow lent resource to other quota group
 	AllowLentResource bool
-	CalculateInfo     QuotaCalculateInfo
-	PodCache          map[string]*PodInfo
-	lock              sync.Mutex
+
+	CalculateInfo QuotaCalculateInfo
+
+	// PodCache 存储了所有 quota 相关联的 pod，会在 informer 的 handler 中更新
+	PodCache map[string]*PodInfo
+	lock     sync.Mutex
 }
 
 func NewQuotaInfo(isParent, allowLentResource bool, name, parentName string) *QuotaInfo {
@@ -219,6 +223,7 @@ func (qi *QuotaInfo) setMinNoLock(min v1.ResourceList) {
 	qi.CalculateInfo.Min = min.DeepCopy()
 }
 
+// 这个 NonNegative 是指加完之后，把小于 0 的值置为 0
 func (qi *QuotaInfo) addRequestNonNegativeNoLock(delta, deltaNonPreemptibleRequest v1.ResourceList) {
 	qi.CalculateInfo.Request = quotav1.Add(qi.CalculateInfo.Request, delta)
 	for _, resName := range quotav1.IsNegative(qi.CalculateInfo.Request) {
@@ -230,6 +235,7 @@ func (qi *QuotaInfo) addRequestNonNegativeNoLock(delta, deltaNonPreemptibleReque
 	}
 }
 
+// 这个 NonNegative 是指加完之后，把小于 0 的值置为 0
 func (qi *QuotaInfo) addChildRequestNonNegativeNoLock(delta v1.ResourceList) {
 	qi.CalculateInfo.ChildRequest = quotav1.Add(qi.CalculateInfo.ChildRequest, delta)
 	for _, resName := range quotav1.IsNegative(qi.CalculateInfo.ChildRequest) {

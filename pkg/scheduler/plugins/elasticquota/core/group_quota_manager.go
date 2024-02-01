@@ -176,6 +176,7 @@ func (gqm *GroupQuotaManager) updateGroupDeltaRequestNoLock(quotaName string, de
 
 	defer gqm.scopedLockForQuotaInfo(curToAllParInfos)()
 
+	// 从下往上更新当前 elastic quota 以及其所有祖先 elastic quota 的 request 值
 	gqm.recursiveUpdateGroupTreeWithDeltaRequest(deltaReq, deltaNonPreemptibleRequest, curToAllParInfos)
 }
 
@@ -190,6 +191,7 @@ func (gqm *GroupQuotaManager) recursiveUpdateGroupTreeWithDeltaRequest(deltaReq,
 			return
 		}
 
+		// request 和 childRequest 两个字段的值确实都要更新下
 		curQuotaInfo.addChildRequestNonNegativeNoLock(deltaReq)
 		realRequest := curQuotaInfo.CalculateInfo.ChildRequest.DeepCopy()
 		// If the quota not allow to lent resource. we should request for min
@@ -232,6 +234,8 @@ func (gqm *GroupQuotaManager) updateGroupDeltaUsedNoLock(quotaName string, delta
 	}
 
 	defer gqm.scopedLockForQuotaInfo(curToAllParInfos)()
+
+	// 从当前 elastic quota 到其先祖节点的 elastic quota 的 used 值都需要更新
 	for i := 0; i < allQuotaInfoLen; i++ {
 		quotaInfo := curToAllParInfos[i]
 		quotaInfo.addUsedNonNegativeNoLock(delta, deltaNonPreemptibleUsed)
@@ -275,11 +279,14 @@ func (gqm *GroupQuotaManager) refreshRuntimeNoLock(quotaName string) v1.Resource
 		return quotaInfo.GetMax()
 	}
 
+	// 根据父级关系向上找所有的祖先节点，直到 root，把本节点及其祖先节点依次放入树组返回
 	curToAllParInfos := gqm.getCurToAllParentGroupQuotaInfoNoLock(quotaInfo.Name)
 
 	defer gqm.scopedLockForQuotaInfo(curToAllParInfos)()
 
 	totalRes := gqm.totalResourceExceptSystemAndDefaultUsed.DeepCopy()
+
+	// 从根节点遍历到本节点，因为 runtime 是 “from top to bottom” 计算的
 	for i := len(curToAllParInfos) - 1; i >= 0; i-- {
 		quotaInfo = curToAllParInfos[i]
 		if quotaInfo.Name == extension.RootQuotaName {
@@ -296,6 +303,7 @@ func (gqm *GroupQuotaManager) refreshRuntimeNoLock(quotaName string) v1.Resource
 			return nil
 		}
 
+		// 先不看，好像是特殊场景
 		// 1. execute scaleMin logic with totalRes and update scaledMin if needed
 		if gqm.scaleMinQuotaEnabled {
 			needScale, newMinQuota := gqm.scaleMinQuotaManager.getScaledMinQuota(
@@ -623,6 +631,7 @@ func (gqm *GroupQuotaManager) updatePodUsedNoLock(quotaName string, oldPod, newP
 
 	var oldPodUsed, newPodUsed, oldNonPreemptibleUsed, newNonPreemptibleUsed v1.ResourceList
 	if oldPod != nil {
+		// elastic quota 的 used 值为 pod 的 request 值
 		oldPodUsed, _ = PodRequestsAndLimits(oldPod)
 		if extension.IsPodNonPreemptible(oldPod) {
 			oldNonPreemptibleUsed = oldPodUsed
@@ -739,6 +748,7 @@ func (gqm *GroupQuotaManager) OnPodAdd(quotaName string, pod *v1.Pod) {
 	gqm.updatePodRequestNoLock(quotaName, nil, pod)
 	// in case failOver, update pod isAssigned explicitly according to its phase and NodeName.
 	if pod.Spec.NodeName != "" && !util.IsPodTerminated(pod) {
+		// 如果 pod 已经调度完成，才认为 Pod IsAssigned 并且更新 elastic quota 的用量
 		gqm.updatePodIsAssignedNoLock(quotaName, pod, true)
 		gqm.updatePodUsedNoLock(quotaName, nil, pod)
 	}
