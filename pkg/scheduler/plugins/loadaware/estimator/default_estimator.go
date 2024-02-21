@@ -74,6 +74,8 @@ func estimatedUsedByResource(requests, limits corev1.ResourceList, resourceName 
 	limitQuantity := limits[resourceName]
 	requestQuantity := requests[resourceName]
 	var quantity resource.Quantity
+	// 这里好像估计 pod 用量，大部分情况都是用 limit 估计的？
+	// 并且只有 request 等于 limit 的时候 scalingFactor 才有用
 	if limitQuantity.Cmp(requestQuantity) > 0 {
 		scalingFactor = 100
 		quantity = limitQuantity
@@ -108,6 +110,7 @@ func estimatedUsedByResource(requests, limits corev1.ResourceList, resourceName 
 }
 
 func (e *DefaultEstimator) EstimateNode(node *corev1.Node) (corev1.ResourceList, error) {
+	// 这个 rawAllocatable 是用来干嘛用的？好像某些情况才有用
 	rawAllocatable, err := extension.GetNodeRawAllocatable(node.Annotations)
 	if err != nil {
 		return node.Status.Allocatable, nil

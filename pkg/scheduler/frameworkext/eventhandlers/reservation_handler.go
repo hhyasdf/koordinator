@@ -193,6 +193,7 @@ func truncateMessage(message string) string {
 func AddScheduleEventHandler(sched *scheduler.Scheduler, schedAdapter frameworkext.Scheduler, koordSharedInformerFactory koordinatorinformers.SharedInformerFactory) {
 	reservationInformer := koordSharedInformerFactory.Scheduling().V1alpha1().Reservations().Informer()
 	// scheduled reservations for pod cache
+	// 创建 reservation CR 的时候会直接触发调度器缓存的更新
 	reservationInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
 			addReservationToSchedulerCache(schedAdapter, obj)

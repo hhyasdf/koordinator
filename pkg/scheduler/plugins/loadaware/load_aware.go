@@ -88,6 +88,7 @@ func New(args runtime.Object, handle framework.Handle) (framework.Plugin, error)
 		return nil, fmt.Errorf("want handle to be of type frameworkext.ExtendedHandle, got %T", handle)
 	}
 
+	// podAssignCache 记录了 pod 和节点的绑定情况，通过 informer 已经被调度成功的 pod 也会被更新到 podAssignCache
 	assignCache := newPodAssignCache()
 	podInformer := frameworkExtender.SharedInformerFactory().Core().V1().Pods()
 	frameworkexthelper.ForceSyncFromInformer(context.TODO().Done(), frameworkExtender.SharedInformerFactory(), podInformer.Informer(), assignCache)
@@ -114,6 +115,8 @@ func (p *Plugin) Name() string { return Name }
 func (p *Plugin) EventsToRegister() []framework.ClusterEvent {
 	// To register a custom event, follow the naming convention at:
 	// https://github.com/kubernetes/kubernetes/blob/e1ad9bee5bba8fbe85a6bf6201379ce8b1a611b1/pkg/scheduler/eventhandlers.go#L415-L422
+	// 调度器通过 nodemetrics CR 来感知节点的负载情况
+	// koordlet 需要将节点负载情况更新到 nodemetrics CR 对象的 status 里
 	gvk := fmt.Sprintf("nodemetrics.%v.%v", slov1alpha1.GroupVersion.Version, slov1alpha1.GroupVersion.Group)
 	return []framework.ClusterEvent{
 		{Resource: framework.GVK(gvk), ActionType: framework.Add | framework.Update | framework.Delete},
@@ -126,10 +129,12 @@ func (p *Plugin) Filter(ctx context.Context, state *framework.CycleState, pod *c
 		return framework.NewStatus(framework.Error, "node not found")
 	}
 
+	// 直接忽略 daemonset pod
 	if isDaemonSetPod(pod.OwnerReferences) {
 		return nil
 	}
 
+	// 每个 node 的 nodemetric 和对应 node 对象的名字是相同的
 	nodeMetric, err := p.nodeMetricLister.Get(node.Name)
 	if err != nil {
 		// For nodes that lack load information, fall back to the situation where there is no load-aware scheduling.
@@ -148,11 +153,14 @@ func (p *Plugin) Filter(ctx context.Context, state *framework.CycleState, pod *c
 
 	filterProfile := generateUsageThresholdsFilterProfile(node, p.args)
 	if len(filterProfile.ProdUsageThresholds) > 0 && extension.GetPodPriorityClassWithDefault(pod) == extension.PriorityProd {
+		// 如果 pod 是 prod 的，并且节点的 prod 工作负载使用资源超过了阈值，则 pod 不能调度到该节点上
 		status := p.filterProdUsage(node, nodeMetric, filterProfile.ProdUsageThresholds)
 		if !status.IsSuccess() {
 			return status
 		}
 	} else {
+		// 检查节点是否达到了总的使用上限，filterProfile.AggregatedUsage 是更高级的上限计量方式，采用一段时间内的 P50、P95 的指标作为实际资源使用情况
+		// 这些个指标在 nodeMetric CR 对象里已经算好了，直接取值就行
 		var usageThresholds map[corev1.ResourceName]int64
 		if filterProfile.AggregatedUsage != nil {
 			usageThresholds = filterProfile.AggregatedUsage.UsageThresholds
@@ -258,6 +266,7 @@ func (p *Plugin) ScoreExtensions() framework.ScoreExtensions {
 }
 
 func (p *Plugin) Reserve(ctx context.Context, state *framework.CycleState, pod *corev1.Pod, nodeName string) *framework.Status {
+	// 绑定中 pod 也需要被标记成 assigned，后续 pod 才会将绑定中的 pod 考虑在 node 使用情况内
 	p.podAssignCache.assign(nodeName, pod)
 	return nil
 }
@@ -291,16 +300,24 @@ func (p *Plugin) Score(ctx context.Context, state *framework.CycleState, pod *co
 	prodPod := extension.GetPodPriorityClassWithDefault(pod) == extension.PriorityProd && p.args.ScoreAccordingProdUsage
 	podMetrics := buildPodMetricMap(p.podLister, nodeMetric, prodPod)
 
+	// 估计要调度的目标 pod 的用量
 	estimatedUsed, err := p.estimator.EstimatePod(pod)
 	if err != nil {
 		return 0, nil
 	}
+
+	// assignedPodEstimatedUsed 应该是该节点上所有已经绑定了的 pod 的估计使用量之和（看起来如果有问题会直接使用这个）
+	// 如果 pod 是 prod 类型，assignedPodEstimatedUsed 不会包含非 prod pod 的结果
 	assignedPodEstimatedUsed, estimatedPods := p.estimatedAssignedPodUsed(nodeName, nodeMetric, podMetrics, prodPod)
 	for resourceName, value := range assignedPodEstimatedUsed {
 		estimatedUsed[resourceName] += value
 	}
+
+	// estimatedPodActualUsages 应该是 assignedPodEstimatedUsed 里每个 pod 对应的实际使用量之和
+	// podActualUsages 应该是该节点上所有没在 estimatedPodActualUsages 里的 pod 的实际使用量之和
 	podActualUsages, estimatedPodActualUsages := sumPodUsages(podMetrics, estimatedPods)
 	if prodPod {
+		// 如果是 prod 的 pod，用该节点上所有已经绑定了的 prod 类型 pod 的估计使用量之和加上其他 pod 的实际使用量之和
 		for resourceName, quantity := range podActualUsages {
 			estimatedUsed[resourceName] += getResourceValue(resourceName, quantity)
 		}
@@ -313,6 +330,8 @@ func (p *Plugin) Score(ctx context.Context, state *framework.CycleState, pod *co
 				nodeUsage = &nodeMetric.Status.NodeMetric.NodeUsage
 			}
 			if nodeUsage != nil {
+				// 如果不是 prod 的 pod，estimatedUsed 结果为，当前 pod 和该节点上所有已经绑定了的 pod 的估计使用量之和
+				// 加上 ‘该节点实际统计使用量减去 “该节点上所有已经绑定了的 pod 的实际使用量之和” 之差’
 				for resourceName, quantity := range nodeUsage.ResourceList {
 					if q := estimatedPodActualUsages[resourceName]; !q.IsZero() {
 						quantity = quantity.DeepCopy()
@@ -393,5 +412,6 @@ func leastRequestedScore(requested, capacity int64) int64 {
 		return 0
 	}
 
+	// framework.MaxNodeScore 是打分的最大值
 	return ((capacity - requested) * framework.MaxNodeScore) / capacity
 }
