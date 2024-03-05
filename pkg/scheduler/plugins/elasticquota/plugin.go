@@ -205,6 +205,7 @@ func (g *Plugin) EventsToRegister() []framework.ClusterEvent {
 	// https://git.k8s.io/kubernetes/pkg/scheduler/eventhandlers.go#L403-L410
 	eqGVK := fmt.Sprintf("elasticquotas.v1alpha1.%v", scheduling.GroupName)
 	return []framework.ClusterEvent{
+		// 只有 pod 删除或者 elastic quota 更新了之后，才触发 pod 的重调度
 		{Resource: framework.Pod, ActionType: framework.Delete},
 		{Resource: framework.GVK(eqGVK), ActionType: framework.All},
 	}
@@ -223,20 +224,23 @@ func (g *Plugin) PreFilter(ctx context.Context, cycleState *framework.CycleState
 		return nil, framework.NewStatus(framework.Error, fmt.Sprintf("Could not find the specified ElasticQuotaManager for quota: %v, tree: %v", quotaName, treeID))
 	}
 	if g.pluginArgs.EnableRuntimeQuota {
-		// 重新计算 runtime 值
+		// 重新计算 runtime 值，算法可以参考 https://koordinator.sh/zh-Hans/docs/designs/multi-hierarchy-elastic-quota-management/#calculate-runtimequota
 		mgr.RefreshRuntime(quotaName)
 	}
+
+	// 算完之后获取最新的对应 elastic quota 信息
 	quotaInfo := mgr.GetQuotaInfoByName(quotaName)
 	if quotaInfo == nil {
 		return nil, framework.NewStatus(framework.Error, fmt.Sprintf("Could not find the specified ElasticQuota"))
 	}
 
-	// 把 pod 状态快照保存在 cycleState 里的 postFilterKey 部分
+	// 把 elastic quota 状态快照保存在 cycleState 里的 postFilterKey 部分
 	// 每个 plugin 的 cycleState 应该是独立的
 	state := g.snapshotPostFilterState(quotaInfo, cycleState)
 
 	podRequest, _ := core.PodRequestsAndLimits(pod)
 
+	// 这里的 state.used 应该指的是已经 assigned 的 pod request 之和
 	used := quotav1.Mask(quotav1.Add(podRequest, state.used), quotav1.ResourceNames(podRequest))
 	// state.usedLimit 为 runtime 或者 max
 	if isLessEqual, exceedDimensions := quotav1.LessThanOrEqual(used, state.usedLimit); !isLessEqual {

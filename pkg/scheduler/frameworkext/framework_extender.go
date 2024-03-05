@@ -266,6 +266,7 @@ func (ext *frameworkExtenderImpl) RunPreBindPlugins(ctx context.Context, state *
 		if !status.IsSuccess() {
 			return status
 		}
+		// 这里看起来是将 PreBind 过程中对 pod/reservation 对象的修改通过 patch 操作更新到 CRD
 		return ext.runPreBindExtensionPlugins(ctx, state, original, pod)
 	}
 

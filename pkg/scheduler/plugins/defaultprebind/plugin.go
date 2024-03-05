@@ -68,6 +68,8 @@ func (pl *Plugin) PreBind(ctx context.Context, cycleState *framework.CycleState,
 	return nil
 }
 
+// 这个插件看起来就是在 prebind 阶段执行一下 patch 操作，将 PreBind 过程中对 pod/reservation 对象的修改通过 patch 操作更新到 CRD
+
 func (pl *Plugin) ApplyPatch(ctx context.Context, cycleState *framework.CycleState, originalObj, modifiedObj metav1.Object) *framework.Status {
 	if originalPod, ok := originalObj.(*corev1.Pod); ok {
 		return pl.applyPodPatch(ctx, originalPod, modifiedObj.(*corev1.Pod))

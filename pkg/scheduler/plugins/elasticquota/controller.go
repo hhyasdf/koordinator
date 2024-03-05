@@ -60,6 +60,7 @@ func (ctrl *Controller) Name() string {
 }
 
 func (ctrl *Controller) Start() {
+	// 一秒钟根据内存计算状态更新一次 elastic quota 的 status
 	go wait.Until(ctrl.syncElasticQuotaStatusWorker, 1*time.Second, context.TODO().Done())
 	go wait.Until(ctrl.syncElasticQuotaStatusMetricsWorker, 10*time.Second, context.TODO().Done())
 }
