@@ -208,6 +208,8 @@ func (cs *Coscheduling) Permit(ctx context.Context, state *framework.CycleState,
 	case core.Wait:
 		klog.InfoS("Pod is waiting to be scheduled at Permit stage", "gang",
 			util.GetId(pod.Namespace, util.GetGangNameByPod(pod)), "pod", klog.KObj(pod))
+
+		// 主要实现 “等待” 所有 group 中所有 pod 一起调度的逻辑
 		retStatus = framework.NewStatus(framework.Wait)
 		// We will also request to move the sibling pods back to activeQ.
 		cs.pgMgr.ActivateSiblings(pod, state)

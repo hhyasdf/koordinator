@@ -196,6 +196,8 @@ func (pgMgr *PodGroupManager) ActivateSiblings(pod *corev1.Pod, state *framework
 		}
 	}
 
+	// 把 pod 放到 cycleState 的 PodsToActivate map 里去，可以在这次调度结束之后马上激活指定 pod 的调度过程
+	// 这里相当于是把同一个 group 里的 pod 主动激活一下
 	if len(toActivePods) != 0 {
 		if c, err := state.Read(framework.PodsToActivateKey); err == nil {
 			if s, ok := c.(*framework.PodsToActivate); ok {
@@ -232,11 +234,14 @@ func (pgMgr *PodGroupManager) PreFilter(ctx context.Context, pod *corev1.Pod) er
 		return fmt.Errorf("gang has not init, gangName: %v, podName: %v", gang.Name,
 			util.GetId(pod.Namespace, pod.Name))
 	}
+
+	// 策略是 extension.GangMatchPolicyOnceSatisfied 并且之前已经达到过了
 	// resourceSatisfied means pod will directly pass the PreFilter
 	if gang.getGangMatchPolicy() == extension.GangMatchPolicyOnceSatisfied && gang.isGangOnceResourceSatisfied() {
 		return nil
 	}
 
+	// 只有 informer 监听到了 gang 对应有大于 getGangMinNum() 的 pod 数目才开始调度
 	// check minNum
 	if gang.getChildrenNum() < gang.getGangMinNum() {
 		return fmt.Errorf("gang child pod not collect enough, gangName: %v, podName: %v", gang.Name,
@@ -248,6 +253,11 @@ func (pgMgr *PodGroupManager) PreFilter(ctx context.Context, pod *corev1.Pod) er
 	}
 
 	// first try update the global cycle of gang
+
+	// 后面的步骤好像都只在 strict 模式下有作用，非 strict 模式下无影响
+
+	// 主要和 PostFilter、Unreserve 过程联动，如果 Filter 过程 pod 调度失败，所有 pod 会被置为 Unschedulable，
+	// 开启下一个 ScheduleCycle（因为上一次 valid 之后才会开始 Filter 过程，此时 ScheduleCycle 已经递增过了）
 	gang.trySetScheduleCycleValid()
 	gangScheduleCycle := gang.getScheduleCycle()
 
@@ -261,15 +271,15 @@ func (pgMgr *PodGroupManager) PreFilter(ctx context.Context, pod *corev1.Pod) er
 			return nil
 		}
 
-		// Strict 模式下会检查非抢占 pod 的 ScheduleCycle，如果大于等于 gang 的 scheduleCycle 会使调度失败
 		podScheduleCycle := gang.getChildScheduleCycle(pod)
 
-		// 主要是检查这个 isScheduleCycleValid，一个 pod 调度失败之后，只有删除所有 pod，
+		// 只有这里检查了 isScheduleCycleValid，只有为 true 的时候才会开始调度
 		if !gang.isScheduleCycleValid() {
 			return fmt.Errorf("gang scheduleCycle not valid, gangName: %v, podName: %v",
 				gang.Name, util.GetId(pod.Namespace, pod.Name))
 		}
 
+		// Strict 模式下会检查非抢占 pod 的 ScheduleCycle，如果大于等于 gang 的 scheduleCycle 会使调度失败
 		if podScheduleCycle >= gangScheduleCycle {
 			return fmt.Errorf("pod's schedule cycle too large, gangName: %v, podName: %v, podCycle: %v, gangCycle: %v",
 				gang.Name, util.GetId(pod.Namespace, pod.Name), podScheduleCycle, gangScheduleCycle)
@@ -281,7 +291,7 @@ func (pgMgr *PodGroupManager) PreFilter(ctx context.Context, pod *corev1.Pod) er
 // PostFilter
 // i. If strict-mode, we will set scheduleCycleValid to false and release all assumed pods.
 // ii. If non-strict mode, we will do nothing.
-// 抢占的时候发生的逻辑
+// 抢占、调度失败的时候发生的逻辑
 func (pgMgr *PodGroupManager) PostFilter(ctx context.Context, pod *corev1.Pod, handle framework.Handle, pluginName string, filteredNodeStatusMap framework.NodeToStatusMap) (*framework.PostFilterResult, *framework.Status) {
 	if !util.IsPodNeedGang(pod) {
 		return &framework.PostFilterResult{}, framework.NewStatus(framework.Unschedulable)
@@ -309,7 +319,8 @@ func (pgMgr *PodGroupManager) PostFilter(ctx context.Context, pod *corev1.Pod, h
 		// gang 调度失败，在 PostFilter 阶段打印信息
 		message := fmt.Sprintf("Gang %q gets rejected due to member Pod %q is unschedulable with reason %q", gang.Name, pod.Name, fitErr)
 
-		// 把所有的 WaitingPod 置为 Unschedulable，把 gang set ScheduleCycleValid，PreFilter 阶段如果是 Strict 的，对应 Pod 会无法调度
+		// strict 模式下，把所有的 WaitingPod 置为 Unschedulable，把 gang 设置为 ScheduleCycleValid，
+		// PreFilter 阶段如果是 Strict 的，对应 Pod 会无法调度
 		pgMgr.rejectGangGroupById(handle, pluginName, gang.Name, message)
 		return &framework.PostFilterResult{}, framework.NewStatus(framework.Unschedulable,
 			fmt.Sprintf("Gang %q gets rejected due to pod is unschedulable", gang.Name))
@@ -333,6 +344,8 @@ func (pgMgr *PodGroupManager) Permit(ctx context.Context, pod *corev1.Pod) (time
 		klog.Warningf("Pod %q missing Gang", klog.KObj(pod))
 		return 0, PodGroupNotFound
 	}
+
+	// 非 strict 模式的话，主要就是看这个地方计数，其他地方的逻辑不重要，只要看 permit 逻辑就行了
 	// first add pod to the gang's WaitingPodsMap
 	gang.addAssumedPod(pod)
 
@@ -355,6 +368,7 @@ func (pgMgr *PodGroupManager) Permit(ctx context.Context, pod *corev1.Pod) (time
 // Unreserve
 // if gang is resourceSatisfied, we only delAssumedPod
 // if gang is not resourceSatisfied and is in StrictMode, we release all the assumed pods
+// Unreserve hook 会在 Reserve 及其之后的任意过程失败的时候被调用，所以可以用来覆盖 Bind 失败的情况
 func (pgMgr *PodGroupManager) Unreserve(ctx context.Context, state *framework.CycleState, pod *corev1.Pod, nodeName string, handle framework.Handle, pluginName string) {
 	if !util.IsPodNeedGang(pod) {
 		return
