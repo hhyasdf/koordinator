@@ -49,8 +49,15 @@ const (
 	// The annotation is added by the scheduler when the gang times out
 	AnnotationGangTimeout = AnnotationGangPrefix + "/timeout"
 
+	// Strict 模式，如果其中一个 pod 调度失败，当前调度周期内，其他已经调度成功的 pod 将会被取消调度，同时正在调度中的 pod 将会在 PreFilter 阶段被拒绝调度。
+	// NonStrict 模式，如果其中一个 pod 调度失败，并不会影响其他 pod 参与调度，会继续累计已经被调度的 pod 直到符合 Gang 调度条件。此模式对于 pod 比较多的情况比较友好，但是会增加不同 Gang 调度之间资源死锁的风险。
+
 	GangModeStrict    = "Strict"
 	GangModeNonStrict = "NonStrict"
+
+	// WaitingPod 指的是在 permit 阶段等待 Bind 的 pod，
+	// 如果一个 permit 扩展返回了 wait，则 Pod 将保持在 permit 阶段，直到被其他 Permit 插件 approve，
+	// 如果超时事件发生，wait 状态变成 deny，Pod 将被放回到待调度队列，此时将触发 Unreserve 扩展
 
 	// AnnotationGangMatchPolicy defines the Gang Scheduling operation of taking which status pod into account
 	// Support GangMatchPolicyOnlyWaiting, GangMatchPolicyWaitingAndRunning, GangMatchPolicyOnceSatisfied, default is GangMatchPolicyOnceSatisfied

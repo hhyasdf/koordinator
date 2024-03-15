@@ -211,6 +211,8 @@ func (g *Plugin) EventsToRegister() []framework.ClusterEvent {
 	}
 }
 
+// 要使用 elastic quota 全部功能只需要部署 koord-scheduler、koord-manager 就可以
+
 func (g *Plugin) PreFilter(ctx context.Context, cycleState *framework.CycleState, pod *corev1.Pod) (*framework.PreFilterResult, *framework.Status) {
 	quotaName, treeID := g.getPodAssociateQuotaNameAndTreeID(pod)
 	if quotaName == "" {

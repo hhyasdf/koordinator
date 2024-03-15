@@ -340,6 +340,7 @@ type ResctrlQOS struct {
 
 type CPUBurstPolicy string
 
+// CPU burst 的几种策略，设置 cpu.cfs_burst_us 可以和 scale up cpu.cfs_quota_us 一起工作
 const (
 	// CPUBurstNone disables cpu burst policy
 	CPUBurstNone CPUBurstPolicy = "none"

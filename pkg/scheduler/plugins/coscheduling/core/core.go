@@ -250,6 +250,9 @@ func (pgMgr *PodGroupManager) PreFilter(ctx context.Context, pod *corev1.Pod) er
 	// first try update the global cycle of gang
 	gang.trySetScheduleCycleValid()
 	gangScheduleCycle := gang.getScheduleCycle()
+
+	// 只要 pod 通过了 PreFilter，都会将 pod 的 scheduleCycle 设置为当前 gang 的 scheduleCycle，
+	// 并且只有这个地方设置了 pod 的 scheduleCycle ～
 	defer gang.setChildScheduleCycle(pod, gangScheduleCycle)
 
 	gangMode := gang.getGangMode()
@@ -257,11 +260,16 @@ func (pgMgr *PodGroupManager) PreFilter(ctx context.Context, pod *corev1.Pod) er
 		if pod.Status.NominatedNodeName != "" {
 			return nil
 		}
+
+		// Strict 模式下会检查非抢占 pod 的 ScheduleCycle，如果大于等于 gang 的 scheduleCycle 会使调度失败
 		podScheduleCycle := gang.getChildScheduleCycle(pod)
+
+		// 主要是检查这个 isScheduleCycleValid，一个 pod 调度失败之后，只有删除所有 pod，
 		if !gang.isScheduleCycleValid() {
 			return fmt.Errorf("gang scheduleCycle not valid, gangName: %v, podName: %v",
 				gang.Name, util.GetId(pod.Namespace, pod.Name))
 		}
+
 		if podScheduleCycle >= gangScheduleCycle {
 			return fmt.Errorf("pod's schedule cycle too large, gangName: %v, podName: %v, podCycle: %v, gangCycle: %v",
 				gang.Name, util.GetId(pod.Namespace, pod.Name), podScheduleCycle, gangScheduleCycle)
@@ -273,6 +281,7 @@ func (pgMgr *PodGroupManager) PreFilter(ctx context.Context, pod *corev1.Pod) er
 // PostFilter
 // i. If strict-mode, we will set scheduleCycleValid to false and release all assumed pods.
 // ii. If non-strict mode, we will do nothing.
+// 抢占的时候发生的逻辑
 func (pgMgr *PodGroupManager) PostFilter(ctx context.Context, pod *corev1.Pod, handle framework.Handle, pluginName string, filteredNodeStatusMap framework.NodeToStatusMap) (*framework.PostFilterResult, *framework.Status) {
 	if !util.IsPodNeedGang(pod) {
 		return &framework.PostFilterResult{}, framework.NewStatus(framework.Unschedulable)
@@ -296,12 +305,18 @@ func (pgMgr *PodGroupManager) PostFilter(ctx context.Context, pod *corev1.Pod, h
 				NodeToStatusMap: filteredNodeStatusMap,
 			},
 		}
+
+		// gang 调度失败，在 PostFilter 阶段打印信息
 		message := fmt.Sprintf("Gang %q gets rejected due to member Pod %q is unschedulable with reason %q", gang.Name, pod.Name, fitErr)
+
+		// 把所有的 WaitingPod 置为 Unschedulable，把 gang set ScheduleCycleValid，PreFilter 阶段如果是 Strict 的，对应 Pod 会无法调度
 		pgMgr.rejectGangGroupById(handle, pluginName, gang.Name, message)
 		return &framework.PostFilterResult{}, framework.NewStatus(framework.Unschedulable,
 			fmt.Sprintf("Gang %q gets rejected due to pod is unschedulable", gang.Name))
 	}
 
+	// Informational plugins should be configured ahead of other ones, and always return Unschedulable status.
+	// 只打印/记录信息的 PostFilter 插件应该永远返回 Unschedulable
 	return &framework.PostFilterResult{}, framework.NewStatus(framework.Unschedulable)
 }
 
@@ -370,6 +385,8 @@ func (pgMgr *PodGroupManager) rejectGangGroupById(handle framework.Handle, plugi
 	gangSet := sets.NewString(gangGroup...)
 
 	if handle != nil {
+		// WaitingPod represents a pod currently waiting in the permit phase.
+		// 把所有 WaitingPod 都声明为 Unschedulable
 		handle.IterateOverWaitingPods(func(waitingPod framework.WaitingPod) {
 			waitingGangId := util.GetId(waitingPod.GetPod().Namespace, util.GetGangNameByPod(waitingPod.GetPod()))
 			if gangSet.Has(waitingGangId) {

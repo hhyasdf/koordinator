@@ -337,6 +337,7 @@ func (b *cpuBurst) getNodeStateForBurst(sharePoolThresholdPercent int64,
 	return nodeBurstState
 }
 
+// 通过 cfs_quota 实现类似 CPU Burst 效果的代码
 // scale cpu.cfs_quota_us for pod/containers by container throttled state and node state
 func (b *cpuBurst) applyCFSQuotaBurst(burstCfg *slov1alpha1.CPUBurstConfig, podMeta *statesinformer.PodMeta,
 	nodeState nodeStateForBurst) {
@@ -355,6 +356,7 @@ func (b *cpuBurst) applyCFSQuotaBurst(burstCfg *slov1alpha1.CPUBurstConfig, podM
 			continue
 		}
 
+		// containerBaseCFS 是 pod 原本的 limit
 		containerBaseCFS := koordletutil.GetContainerBaseCFSQuota(container)
 		if containerBaseCFS <= 0 {
 			continue
@@ -375,6 +377,8 @@ func (b *cpuBurst) applyCFSQuotaBurst(burstCfg *slov1alpha1.CPUBurstConfig, podM
 				pod.Namespace, pod.Name, containerStat.Name, err)
 			continue
 		}
+
+		// containerCeilCFS 是 container cpu burst 的上限
 		containerCeilCFS := containerBaseCFS
 		if burstCfg.CFSQuotaBurstPercent != nil && *burstCfg.CFSQuotaBurstPercent > 100 {
 			containerCeilCFS = int64(float64(containerBaseCFS) * float64(*burstCfg.CFSQuotaBurstPercent) / 100)
@@ -384,6 +388,7 @@ func (b *cpuBurst) applyCFSQuotaBurst(burstCfg *slov1alpha1.CPUBurstConfig, podM
 		klog.V(6).Infof("cfs burst operation for container %v/%v/%v is %v",
 			pod.Namespace, pod.Name, containerStat.Name, originOperation)
 
+		// 就算发生了 throttled，如果节点状态不是 nodeBurstIdle，则不会 scale up
 		changed, finalOperation := changeOperationByNode(nodeState, originOperation)
 		if changed {
 			klog.Infof("node is in %v state, switch origin scale operation %v to %v",
@@ -393,6 +398,7 @@ func (b *cpuBurst) applyCFSQuotaBurst(burstCfg *slov1alpha1.CPUBurstConfig, podM
 				nodeState, finalOperation.String(), originOperation.String())
 		}
 
+		// 看起来只要容器发生了 cpu throttled，并且节点是 nodeBurstIdle 的，那就会一直 scale up
 		containerTargetCFS := containerCurCFS
 		if finalOperation == cfsScaleUp {
 			containerTargetCFS = int64(float64(containerCurCFS) * cfsIncreaseStep)
@@ -401,6 +407,8 @@ func (b *cpuBurst) applyCFSQuotaBurst(burstCfg *slov1alpha1.CPUBurstConfig, podM
 		} else if finalOperation == cfsReset {
 			containerTargetCFS = containerBaseCFS
 		}
+
+		// 最低不能低于 pod 原本的 limit，最高不能超过 containerCeilCFS
 		containerTargetCFS = util.MaxInt64(containerBaseCFS, util.MinInt64(containerTargetCFS, containerCeilCFS))
 
 		if containerTargetCFS == containerCurCFS {
@@ -409,12 +417,15 @@ func (b *cpuBurst) applyCFSQuotaBurst(burstCfg *slov1alpha1.CPUBurstConfig, podM
 			continue
 		}
 		deltaContainerCFS := containerTargetCFS - containerCurCFS
+
+		// 这里是 apply cfs_quota 配置的地方
 		err = b.applyContainerCFSQuota(podMeta, containerStat, containerCurCFS, deltaContainerCFS)
 		if err != nil {
 			klog.Infof("scale container %v/%v/%v cfs quota failed, operation %v, delta cfs quota %v, reason %v",
 				pod.Namespace, pod.Name, containerStat.Name, finalOperation, deltaContainerCFS, err)
 			continue
 		}
+
 		metrics.RecordContainerScaledCFSQuotaUS(pod.Namespace, pod.Name, containerStat.ContainerID, containerStat.Name, float64(containerTargetCFS))
 		klog.Infof("scale container %v/%v/%v cfs quota success, operation %v, current cfs %v, target cfs %v",
 			pod.Namespace, pod.Name, containerStat.Name, finalOperation, containerCurCFS, containerTargetCFS)
@@ -471,6 +482,7 @@ func (b *cpuBurst) genOperationByContainer(burstCfg *slov1alpha1.CPUBurstConfig,
 		return cfsScaleDown
 	}
 
+	// 查询容器 cpu throttled 的情况
 	containerThrottled, err := helpers.CollectContainerThrottledMetric(b.metricCache, &containerStat.ContainerID, b.metricCollectInterval)
 	if err != nil {
 		klog.V(4).Infof("failed to get container %s/%s/%s throttled metric, maybe not exist, skip this round, reason %v",
@@ -478,6 +490,7 @@ func (b *cpuBurst) genOperationByContainer(burstCfg *slov1alpha1.CPUBurstConfig,
 		return cfsRemain
 	}
 
+	// 如果一段时间内没有发生 cpu throttled
 	if containerThrottled.Count() == 0 {
 		klog.V(4).Infof("container %s/%s/%s throttled metric is empty, skip this round",
 			pod.Namespace, pod.Name, containerStat.Name)
@@ -491,6 +504,7 @@ func (b *cpuBurst) genOperationByContainer(burstCfg *slov1alpha1.CPUBurstConfig,
 		return cfsRemain
 	}
 
+	// 如果一段时间内发生了 cpu throttled，就 scale up
 	if containerThrottledLastValue > 0 {
 		return cfsScaleUp
 	}

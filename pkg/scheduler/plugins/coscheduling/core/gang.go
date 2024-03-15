@@ -48,10 +48,13 @@ type Gang struct {
 	// strict-mode or non-strict-mode
 	Mode              string
 	MinRequiredNumber int
-	TotalChildrenNum  int
-	GangGroupId       string
-	GangGroup         []string
-	Children          map[string]*v1.Pod
+
+	// gang.scheduling.koordinator.sh/total-number 当前配置仅作用于 Strict 模式
+	TotalChildrenNum int
+
+	GangGroupId string
+	GangGroup   []string
+	Children    map[string]*v1.Pod
 	// pods that have already assumed(waiting in Permit stage)
 	WaitingForBindChildren map[string]*v1.Pod
 	// pods that have already bound
@@ -59,6 +62,7 @@ type Gang struct {
 	// OnceResourceSatisfied indicates whether the gang has ever reached the ResourceSatisfied state，which means the
 	// children number has reached the minNum in the early step,
 	// once this variable is set true, it is irreversible.
+	// 一旦达到 gang 调度条件，那对应 gang 里的每个 pod 之后无论如何都会被成功 gang 调度，不会再需要满足 gang 调度条件
 	OnceResourceSatisfied bool
 
 	// only-waiting, only consider waiting pods
@@ -66,6 +70,8 @@ type Gang struct {
 	// waiting-running-succeed, consider waiting, running and succeed pods
 	// once-satisfied, once gang is satisfied, no need to consider any status pods
 	GangMatchPolicy string
+
+	// scheduleCycle\scheduleCycleValid\childrenScheduleRoundMap 仅作用于 Strict 模式
 
 	// if the podGroup should be passed at PreFilter stage(Strict-Mode)
 	ScheduleCycleValid bool
@@ -75,7 +81,8 @@ type Gang struct {
 	// we set the pod's cycle in `childrenScheduleRoundMap` equal with `scheduleCycle` and pass the check. If result is negative, means
 	// the pod has been scheduled in this cycle, so we should reject it. With `totalChildrenNum`'s help, when the last pod comes to make all
 	// `childrenScheduleRoundMap`'s values equal to `scheduleCycle`, Gang's `scheduleCycle` will be added by 1, which means a new schedule cycle.
-	ScheduleCycle            int
+	ScheduleCycle int
+	// 保存了这个 gang 里的每个 pod 经过 PreFilter 过程的次数，看起来好像只有所有 pod 都经过了 PreFilter 阶段一次，才会进入下次 ScheduleCycle（加一）
 	ChildrenScheduleRoundMap map[string]int
 
 	GangFrom    string
@@ -143,6 +150,7 @@ func (gang *Gang) tryInitByPodConfig(pod *v1.Pod, args *config.CoschedulingArgs)
 		mode != extension.GangMatchPolicyOnceSatisfied {
 		klog.Errorf("pod's annotation AnnotationGangMatchPolicy illegal, gangName: %v, value: %v",
 			gang.Name, matchPolicy)
+		// 默认只要一次满足 gang 调度条件，后面相同 gang 就不会卡调度
 		matchPolicy = extension.GangMatchPolicyOnceSatisfied
 	}
 	gang.GangMatchPolicy = matchPolicy
@@ -406,6 +414,7 @@ func (gang *Gang) trySetScheduleCycleValid() {
 		}
 	}
 
+	// 只有所有本轮调度完成的 pod 数量加起来等于 gang.TotalChildrenNum 的时候，才会进入下一个调度周期
 	if num == gang.TotalChildrenNum {
 		gang.ScheduleCycleValid = true
 		gang.ScheduleCycle += 1

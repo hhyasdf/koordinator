@@ -110,12 +110,15 @@ func (cs *Coscheduling) Name() string {
 	return Name
 }
 
+// 同一时间，调度器只能使用一个 QueueSortPlugin 实现
+
 // Less is sorting pods in the scheduling queue in the following order.
 // Firstly, compare the priorities of the two pods, the higher priority (if pod's priority is equal,then compare their KoordinatorPriority at labels )is at the front of the queue,
 // Secondly, compare Gang group ID of the two pods, pods that NOT belong to a Gang will have higher priority than pods that belongs to a Gang,
 // Thirdly, compare the creationTimestamp of two pods, if pod belongs to a Gang, then we compare creationTimestamp of the Gang, the one created first will be at the front of the queue
 // Finally, compare pod's namespaced name.
 func (cs *Coscheduling) Less(podInfo1, podInfo2 *framework.QueuedPodInfo) bool {
+	// 优先 pod 的 Priority
 	prio1 := corev1helpers.PodPriority(podInfo1.Pod)
 	prio2 := corev1helpers.PodPriority(podInfo2.Pod)
 	if prio1 != prio2 {
@@ -133,24 +136,28 @@ func (cs *Coscheduling) Less(podInfo1, podInfo2 *framework.QueuedPodInfo) bool {
 		return subPrio1 > subPrio2
 	}
 
+	// 如果 Priority 相同，gang group 的字典序越小，越优先被调度，没有 gang group 的 pod 会优先于有 gang group 的 pod 调度
 	group1, _ := cs.pgMgr.GetGroupId(podInfo1.Pod)
 	group2, _ := cs.pgMgr.GetGroupId(podInfo2.Pod)
 	if group1 != group2 {
 		return group1 < group2
 	}
 
+	// 如果 gang group 相同，优先没有满足 gang 调度条件的 pod
 	isgang1satisfied := cs.pgMgr.IsGangMinSatisfied(podInfo1.Pod)
 	isgang2satisfied := cs.pgMgr.IsGangMinSatisfied(podInfo2.Pod)
 	if isgang1satisfied != isgang2satisfied {
 		return !isgang1satisfied
 	}
 
+	// childScheduleCycle 小的 pod 先调度
 	childScheduleCycle1 := cs.pgMgr.GetChildScheduleCycle(podInfo1.Pod)
 	childScheduleCycle2 := cs.pgMgr.GetChildScheduleCycle(podInfo2.Pod)
 	if childScheduleCycle1 != childScheduleCycle2 {
 		return childScheduleCycle1 < childScheduleCycle2
 	}
 
+	// 先创建的先调度
 	creationTime1 := cs.pgMgr.GetCreatTime(podInfo1)
 	creationTime2 := cs.pgMgr.GetCreatTime(podInfo2)
 	if creationTime1.Equal(creationTime2) {

@@ -73,6 +73,11 @@ type Plugin struct {
 	podAssignCache   *podAssignCache
 }
 
+// 负载感知调度只是打分，实际调度还是需要满足 pod 的 request 小于 nodeInfo.Allocatable - nodeInfo.Requested，由社区 noderesources 插件实现，
+// 并不是真的 “pod 的 request 小于节点运行时剩余资源就可以调度上去”，只是参考运行时负载打分看节点优先级
+
+//
+
 func New(args runtime.Object, handle framework.Handle) (framework.Plugin, error) {
 	pluginArgs, ok := args.(*config.LoadAwareSchedulingArgs)
 	if !ok {

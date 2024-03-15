@@ -144,6 +144,7 @@ func (gangCache *GangCache) onPodDelete(obj interface{}) {
 		return
 	}
 
+	// pod 删除的时候会清理 gang 中 Pod 的缓存
 	shouldDeleteGang := gang.deletePod(pod)
 	if shouldDeleteGang {
 		gangCache.deleteGangFromCacheByGangId(gangId)
