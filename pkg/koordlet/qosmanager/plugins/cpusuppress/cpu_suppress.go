@@ -237,6 +237,7 @@ func (r *CPUSuppress) applyCPUSetWithStaticPolicy(cpus []int32) error {
 }
 
 // suppressBECPU adjusts the cpusets of BE pods to suppress BE cpu usage
+// 压制 BestEffort 类型 pod CPU 的代码逻辑入口，会随时根据节点的使用公情况调整整个 BE cgroup 的 cfs_quota
 func (r *CPUSuppress) suppressBECPU() {
 	// 1. calculate be suppress threshold and check if the suppress is needed
 	//    1.1. retrieve latest node resource usage from the metricCache
@@ -310,10 +311,12 @@ func (r *CPUSuppress) suppressBECPU() {
 		klog.Fatalf("type error, expect %T， but got %T", metriccache.NodeCPUInfo{}, nodeCPUInfoRaw)
 	}
 	if nodeSLO.Spec.ResourceUsedThresholdWithBE.CPUSuppressPolicy == slov1alpha1.CPUCfsQuotaPolicy {
+		// 会把整个 BE 的 cgroup 的 cfs_quota 降低
 		r.adjustByCfsQuota(suppressCPUQuantity, node)
 		r.suppressPolicyStatuses[string(slov1alpha1.CPUCfsQuotaPolicy)] = policyUsing
 		r.recoverCPUSetIfNeed(koordletutil.ContainerCgroupPathRelativeDepth)
 	} else {
+		// 或者通过调整 BE 的 cgroup 的 cpu.cpu_sets 限制 BE 可使用的 cpu 范围
 		r.adjustByCPUSet(suppressCPUQuantity, nodeCPUInfo)
 		r.suppressPolicyStatuses[string(slov1alpha1.CPUSetPolicy)] = policyUsing
 		r.recoverCFSQuotaIfNeed()
